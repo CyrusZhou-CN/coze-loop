@@ -3227,6 +3227,7 @@ func ExpectedQuotaConsumptionDomain2OpenAPI(c *domainExpt.ExpectedQuotaConsumpti
 			Category:    gptr.Of(r.GetCategory()),
 			ResourceKey: gptr.Of(r.GetResourceKey()),
 			Amount:      gptr.Of(r.GetAmount()),
+			Source:      gptr.Of(r.GetSource()),
 		})
 	}
 	if len(resources) == 0 {
@@ -3256,6 +3257,7 @@ func ExpectedQuotaConsumptionOpenAPI2Domain(c *openapiExperiment.ExpectedQuotaCo
 			Category:    r.GetCategory(),
 			ResourceKey: r.GetResourceKey(),
 			Amount:      r.GetAmount(),
+			Source:      gptr.Of(r.GetSource()),
 		})
 	}
 	if len(resources) == 0 {
