@@ -749,9 +749,13 @@ func (e *ExptSchedulerImpl) handleZombies(ctx context.Context, event *entity.Exp
 		return nil, nil, err
 	}
 
-	// 主表 expt_item_result 也带上 err_msg，供 MGetExperimentResult 构造 ItemSystemInfo 时读取
+	// 主表 expt_item_result 也带上 err_msg，供 MGetExperimentResult 构造 ItemSystemInfo 时读取。
+	//
+	// ★ 刻意只写 err_msg、不写 status：status 归 RecordItemRunLogs 统一落。
+	// 它算 expt_stats 增量用的是「主表旧值 -1 / run log 新值 +1」的差分，
+	// 这里抢先把主表改成 Fail，两边就都读到 Fail、差分算成净零 —— 该 item 从计数上凭空蒸发。
+	// run log 已是 Fail，主表最终态不变，只是晚一个 tick 内的间隔可见。
 	if err := e.ExptItemResultRepo.UpdateItemsResult(ctx, event.SpaceID, event.ExptID, zombieItemIDs, map[string]any{
-		"status":  int32(entity.ItemRunState_Fail),
 		"err_msg": zombieErrBytes,
 	}); err != nil {
 		logs.CtxError(ctx, "[ExptEval] update zombie items main table err_msg fail, expt_id: %v, expt_run_id: %v, item_ids: %v, err: %v", event.ExptID, event.ExptRunID, zombieItemIDs, err)
@@ -761,8 +765,9 @@ func (e *ExptSchedulerImpl) handleZombies(ctx context.Context, event *entity.Exp
 		return nil, nil, err
 	}
 
-	// item 已落终态 → 释放其额度预占。放在状态写库之后：先确保终态可见，
-	// 再释放额度，避免"额度已放但 item 仍显示 Processing"这一瞬间被下一拍读到而重复授予。
+	// item 已落终态 → 释放其额度预占。放在 run log 写库之后：调度侧判占用读的是
+	// run log（LoadDispatchRuntime 按 status IN (Queueing, Processing) 扫），
+	// 先落 Fail 再放额度，才不会留下"额度已归还、run log 仍算占用"的窗口。
 	e.releaseCentralQuotaForItems(ctx, expt, event.ExptRunID, zombieItemIDs, "item zombie timeout")
 
 	// 不清 run_log 的 target_result_id / evaluator_result_ids：
@@ -966,7 +971,7 @@ func (e *ExptSchedulerImpl) sweepTerminatedSandboxItems(ctx context.Context, eve
 		false,
 	)
 
-	// 与 handleZombies 一致的写库形状，保证 UI (MGetExperimentResult) 拿到一致的 err_msg。
+	// 与 handleZombies 一致的写库形状（含只写 err_msg 不写 status 的理由，见那边注释）。
 	errBytes := []byte(errno.SerializeErr(errno.NewSandboxTerminatedBeforeReportErr(firstStatus)))
 
 	if err := e.ExptItemResultRepo.UpdateItemRunLog(ctx, event.ExptID, event.ExptRunID, terminatedItemIDs, map[string]any{
@@ -977,7 +982,6 @@ func (e *ExptSchedulerImpl) sweepTerminatedSandboxItems(ctx context.Context, eve
 		return nil, nil, err
 	}
 	if err := e.ExptItemResultRepo.UpdateItemsResult(ctx, event.SpaceID, event.ExptID, terminatedItemIDs, map[string]any{
-		"status":  int32(entity.ItemRunState_Fail),
 		"err_msg": errBytes,
 	}); err != nil {
 		logs.CtxError(ctx, "[ExptEval] update sandbox-terminated items main table err_msg fail, expt_id: %v, expt_run_id: %v, item_ids: %v, err: %v", event.ExptID, event.ExptRunID, terminatedItemIDs, err)

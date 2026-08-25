@@ -894,7 +894,15 @@ func TestExptSchedulerImpl_handleZombies(t *testing.T) {
 					int64(1),
 					[]int64{1, 3},
 					gomock.Any(),
-				).Return(nil).Times(1)
+				).DoAndReturn(func(_ context.Context, _, _ int64, _ []int64, ufields map[string]any) error {
+					// ★ 主表这一次刻意只写 err_msg。带上 status 会让 RecordItemRunLogs 的
+					// 差分（主表旧值 -1 / run log 新值 +1）两边都读到 Fail 而算成净零，
+					// 该 item 在 expt_stats 上凭空蒸发。断言 key 不存在，不是断言它等于某值。
+					_, hasStatus := ufields["status"]
+					assert.False(t, hasStatus, "zombie 路径不得抢先写主表 status，见 handleZombies 注释")
+					assert.NotNil(t, ufields["err_msg"])
+					return nil
+				}).Times(1)
 				f.exptTurnResultRepo.EXPECT().CreateOrUpdateItemsTurnRunLogStatus(
 					gomock.Any(),
 					int64(3),
@@ -2413,7 +2421,15 @@ func TestExptSchedulerImpl_sweepTerminatedSandboxItems_CrossSpace(t *testing.T) 
 		).Times(1)
 		// 消费方侧写库仍然用 event.SpaceID=3
 		mockItemRepo.EXPECT().UpdateItemRunLog(gomock.Any(), int64(1), int64(2), []int64{10}, gomock.Any(), int64(3)).Return(nil)
-		mockItemRepo.EXPECT().UpdateItemsResult(gomock.Any(), int64(3), int64(1), []int64{10}, gomock.Any()).Return(nil)
+		// ★ 与 handleZombies 同一条不变量：主表只写 err_msg，status 归 RecordItemRunLogs。
+		// 本处曾照抄 handleZombies 的写库形状（连 status 一起抄），把同一个净零 bug 复制了一份。
+		mockItemRepo.EXPECT().UpdateItemsResult(gomock.Any(), int64(3), int64(1), []int64{10}, gomock.Any()).
+			DoAndReturn(func(_ context.Context, _, _ int64, _ []int64, ufields map[string]any) error {
+				_, hasStatus := ufields["status"]
+				assert.False(t, hasStatus, "sandbox sweep 路径不得抢先写主表 status")
+				assert.NotNil(t, ufields["err_msg"])
+				return nil
+			})
 		mockTurnRepo.EXPECT().CreateOrUpdateItemsTurnRunLogStatus(gomock.Any(), int64(3), int64(1), int64(2), []int64{10}, entity.TurnRunState_Fail).Return(nil)
 
 		items := []*entity.ExptEvalItem{{ItemID: 10, State: entity.ItemRunState_Processing}}
